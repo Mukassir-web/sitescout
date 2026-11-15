@@ -1,0 +1,13 @@
+name: keep-alive
+# Render's free tier sleeps after 15 idle minutes; ping the health endpoint so the demo stays warm.
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+permissions: {}
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - run: curl -fsS --max-time 90 --retry 2 https://sitescout-wz36.onrender.com/api/health

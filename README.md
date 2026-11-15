@@ -4,6 +4,8 @@
 
 Built for **BuildSprint Round 2: CLI-Driven AI Chat Execution for Complex Tasks**.
 
+**Live demo:** https://sitescout-wz36.onrender.com
+
 > "Crawl https://books.toscrape.com, extract the important information, give me a summary, and return the extracted data in JSON format."
 
 SiteScout does not ask an LLM to *describe* a crawl. The backend launches an approved command-line tool (`sitecrawl`) as a real OS process, streams its stderr live into the chat, captures stdout and the exit code, validates the output against a schema, and only then lets a model summarise the extracted text.
@@ -174,17 +176,15 @@ Without `GROQ_API_KEY` the app still works: intent falls back to rules and summa
 
 ## Deploy (free)
 
-**Hugging Face Spaces (Docker)**: create a Space with SDK *Docker*, push this repo to it, and add `GROQ_API_KEY` under *Settings → Variables and secrets*. The Space README needs this header:
+The live demo runs on **Render's free tier** (Singapore), built straight from this repo's Dockerfile and redeployed on every push:
 
-```yaml
----
-title: SiteScout
-sdk: docker
-app_port: 7860
----
-```
+1. *New → Web Service*, repo `Mukassir-web/sitescout`, branch `main`, runtime Docker.
+2. Instance type Free; health check path `/api/health`.
+3. Add the secret env var `GROQ_API_KEY`. Render injects `PORT`, which the container honours.
 
-Any Docker host works the same way (Render, Koyeb, Railway): build the Dockerfile, set `GROQ_API_KEY`, expose port 7860.
+Free instances sleep after 15 idle minutes, so `.github/workflows/keep-alive.yml` pings `/api/health` every 10 minutes. CI (`ci.yml`) runs the tests, type-check and UI build on every push.
+
+Any Docker host works the same way (Render, Cloud Run, a VPS): build the Dockerfile, set `GROQ_API_KEY`, expose port 7860. Health check: `GET /api/health`.
 
 ## Demo script
 
@@ -201,7 +201,7 @@ Any Docker host works the same way (Render, Koyeb, Railway): build the Dockerfil
 - **CLI**: Python, httpx, selectolax (lexbor), urllib.robotparser
 - **Frontend**: React 19, TypeScript, Vite, Tailwind CSS v4, Motion, lucide icons; Schibsted Grotesk, Newsreader and JetBrains Mono (self-hosted)
 - **Models (Groq)**: `openai/gpt-oss-20b` (intent), `openai/gpt-oss-120b` (summaries), `meta-llama/llama-prompt-guard-2-86m` (injection detection)
-- **Hosting**: Docker on Hugging Face Spaces (free tier)
+- **Hosting**: Docker on Render (free tier), kept warm by a GitHub Actions ping
 
 **AI assistance**: the code was written with an AI coding agent (Hark) under our direction; UI direction followed Anthropic's `frontend-design` skill guidelines. We reviewed, tested and can explain every component. Runtime AI is limited to the three Groq models above.
 
