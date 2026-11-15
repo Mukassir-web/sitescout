@@ -121,23 +121,27 @@ async def crawl(start_url: str, lim: Limits, st: CrawlState) -> None:
         frontier: list[str] = [start_url]
         parents: dict[str, str | None] = {start_url: None}
         sem = asyncio.Semaphore(lim.concurrency)
+        inflight = [0]
 
         async def visit(url: str, depth: int) -> list[str]:
             if len(st.pages) >= lim.max_pages:
                 return []
             async with sem:
-                if len(st.pages) >= lim.max_pages:
+                if len(st.pages) + inflight[0] >= lim.max_pages:
                     return []
+                inflight[0] += 1
                 t0 = time.perf_counter()
-                events.emit("info", "fetch_start", url=url, depth=depth)
+                events.emit("info", "fetch_start", url=url, depth=depth, parent=parents.get(url))
                 try:
                     final, body, status = await fetch(client, url, lim)
                 except FetchError as exc:
+                    inflight[0] -= 1
                     st.errors.append({"url": url, "kind": exc.kind, "message": str(exc), "status": exc.status})
                     events.emit("warn", "fetch_failed", url=url, kind=exc.kind, message=str(exc))
                     if depth == 0:
                         raise
                     return []
+                inflight[0] -= 1
                 if depth == 0:
                     st.start_final_url = final
                 st.bytes += len(body.encode("utf-8", errors="ignore"))
@@ -147,9 +151,12 @@ async def crawl(start_url: str, lim: Limits, st: CrawlState) -> None:
                 internal = [l for l in links if _same_site(l, start_url) and is_crawlable_link(l)]
                 page["internal_links"] = len(internal)
                 page["external_links"] = len(links) - len(internal)
-                if len(st.pages) < lim.max_pages:
+                if len(st.pages) >= lim.max_pages:
+                    events.emit("info", "page_discarded", url=url, reason="page limit reached")
+                    return []
+                if True:
                     st.pages.append(page)
-                    events.emit("info", "page_done", url=final, depth=depth, status=status,
+                    events.emit("info", "page_done", url=final, requested=url, depth=depth, status=status,
                                 title=page["title"][:120], words=page["word_count"],
                                 ms=page["fetch_ms"], count=len(st.pages), parent=parents.get(url))
                 return internal
