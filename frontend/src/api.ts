@@ -1,10 +1,24 @@
 import type { RunView, LogEvent, CrawlNode } from "./types";
 
-export async function startRun(prompt: string): Promise<string> {
+export interface Turn { prompt: string; url?: string | null; answer?: string | null }
+
+/** Earlier finished turns, so follow-ups like "how many commits?" keep their context. */
+export function historyOf(runs: RunView[]): Turn[] {
+  return runs
+    .filter((r) => r.ended && r.result)
+    .slice(-6)
+    .map((r) => ({
+      prompt: r.prompt.slice(0, 1500),
+      url: (r.result?.data?.request?.url as string | undefined) ?? (r.task?.action === "crawl_site" ? r.task.url : null) ?? null,
+      answer: (r.result?.summary?.answer || r.result?.message || "").slice(0, 600) || null,
+    }));
+}
+
+export async function startRun(prompt: string, history: Turn[] = []): Promise<string> {
   const r = await fetch("/api/runs", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt }),
+    body: JSON.stringify({ prompt, history }),
   });
   const body = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(body.error || `Request failed (${r.status})`);
@@ -33,14 +47,15 @@ export function subscribe(id: string, patch: Patch): () => void {
       const nodes = { ...r.nodes };
       const url = d.url;
       if (url && d.event === "fetch_start") {
-        nodes[url] = { url, parent: (d.depth ?? 0) === 0 ? null : (d.parent ?? null), depth: d.depth ?? 0, state: "fetching", order: order++ };
+        nodes[url] = { url, parent: (d.depth ?? 0) === 0 ? null : (d.parent ?? null), depth: d.depth ?? 0, state: "fetching", order: order++, t: d.t };
       } else if (url && d.event === "page_done") {
         const key = typeof d.requested === "string" && nodes[d.requested] ? d.requested : url;
         const prev: CrawlNode | undefined = nodes[key];
         nodes[key] = {
           ...(prev ?? { url: key, depth: d.depth ?? 0, order: order++, parent: d.parent ?? null }),
           parent: (d.depth ?? 0) === 0 ? null : (d.parent ?? prev?.parent ?? null),
-          state: "done", title: d.title, status: d.status, ms: d.ms,
+          state: "done", title: d.title, status: d.status, ms: d.ms, words: d.words,
+          relevance: typeof d.relevance === "number" ? d.relevance : undefined, t: prev?.t ?? d.t,
         };
       } else if (url && d.event === "page_discarded") {
         const k = Object.keys(nodes).find((u) => u === url) ?? url;

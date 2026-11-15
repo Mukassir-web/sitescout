@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 import urllib.robotparser
 from dataclasses import dataclass, field
@@ -26,6 +27,8 @@ class Limits:
     max_bytes: int = 2_000_000      # per page
     concurrency: int = 4
     respect_robots: bool = True
+    focus: str = ""                 # words that make a link more relevant
+    scope: str = "auto"             # auto: stay under the start URL's path when it has one
 
 
 @dataclass
@@ -62,7 +65,8 @@ async def _guarded(url: str) -> str:
 async def fetch(client: httpx.AsyncClient, url: str, lim: Limits, html_only: bool = True) -> tuple[str, str, int]:
     """GET with manual, re-validated redirects and a byte cap. Returns (final_url, body, status)."""
     current = await _guarded(url)
-    for _ in range(MAX_REDIRECTS + 1):
+    retried = False
+    for _ in range(MAX_REDIRECTS + 2):
         try:
             async with client.stream("GET", current, timeout=lim.request_timeout) as r:
                 if r.is_redirect:
@@ -71,6 +75,19 @@ async def fetch(client: httpx.AsyncClient, url: str, lim: Limits, html_only: boo
                         raise FetchError("http", "redirect without location", r.status_code)
                     current = await _guarded(urljoin(current, loc))
                     continue
+                if r.status_code in (429, 503) and not retried:
+                    # one polite retry, honouring Retry-After but never waiting long
+                    retried = True
+                    try:
+                        wait = float(r.headers.get("retry-after", "2"))
+                    except ValueError:
+                        wait = 2.0
+                    wait = min(max(wait, 1.0), 4.0)
+                    events.emit("warn", "rate_limited", url=current, status=r.status_code, retry_in_s=wait)
+                    await asyncio.sleep(wait)
+                    continue
+                if r.status_code == 429:
+                    raise FetchError("rate_limited", "HTTP 429 (the site is rate-limiting requests)", 429)
                 if r.status_code >= 400:
                     raise FetchError("http", f"HTTP {r.status_code}", r.status_code)
                 ctype = r.headers.get("content-type", "").lower()
@@ -109,6 +126,47 @@ async def load_robots(client: httpx.AsyncClient, start: str, lim: Limits, st: Cr
     return rp
 
 
+STOP = {"the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "is", "are", "what", "how", "many",
+        "does", "do", "it", "this", "that", "me", "my", "about", "with", "tell", "give", "site", "website",
+        "page", "pages", "please", "info", "information", "json", "summary", "summarise", "summarize",
+        "have", "has", "there", "which", "who", "when", "where", "why", "can", "you", "show", "list", "find",
+        "get", "all", "any", "its", "their", "they", "from", "crawl", "extract", "return", "data", "dude", "abt"}
+
+
+def focus_terms(focus: str) -> list[str]:
+    words = re.findall(r"[a-z0-9]{3,}", (focus or "").lower())
+    out = []
+    for w in words:
+        if w in STOP:
+            continue
+        out.append(w[:-1] if w.endswith("s") and len(w) > 4 else w)  # commits -> commit
+    return list(dict.fromkeys(out))[:8]
+
+
+def scope_prefix(start_url: str) -> str:
+    """'/owner/repo' for https://github.com/owner/repo, '/docs' for /docs/intro.html, '' for the root."""
+    path = urlsplit(start_url).path or "/"
+    if path in ("", "/"):
+        return ""
+    last = path.rstrip("/").rsplit("/", 1)[-1]
+    if "." in last and not path.endswith("/"):
+        path = path.rsplit("/", 1)[0]
+    return path.rstrip("/")
+
+
+def score_link(link: dict, prefix: str, terms: list[str]) -> float:
+    path = urlsplit(link["url"]).path.lower()
+    hay = (path + " " + (link.get("text") or "")).lower()
+    s = 0.0
+    if prefix and (path == prefix.lower() or path.startswith(prefix.lower() + "/")):
+        s += 6
+    if link.get("in_content"):
+        s += 3
+    s += sum(4 for t in terms if t in hay)
+    s -= path.count("/") * 0.15 + (0.5 if urlsplit(link["url"]).query else 0)
+    return s
+
+
 async def crawl(start_url: str, lim: Limits, st: CrawlState) -> None:
     headers = {"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.5"}
     async with httpx.AsyncClient(headers=headers, follow_redirects=False, http2=False) as client:
@@ -122,8 +180,12 @@ async def crawl(start_url: str, lim: Limits, st: CrawlState) -> None:
         parents: dict[str, str | None] = {start_url: None}
         sem = asyncio.Semaphore(lim.concurrency)
         inflight = [0]
+        terms = focus_terms(lim.focus)
+        prefix = scope_prefix(start_url) if lim.scope == "auto" else ""
+        scores: dict[str, float] = {start_url: 99.0}
+        events.emit("info", "crawl_plan", scope=prefix or "/", focus_terms=terms)
 
-        async def visit(url: str, depth: int) -> list[str]:
+        async def visit(url: str, depth: int) -> list[dict]:
             if len(st.pages) >= lim.max_pages:
                 return []
             async with sem:
@@ -146,37 +208,48 @@ async def crawl(start_url: str, lim: Limits, st: CrawlState) -> None:
                     st.start_final_url = final
                 st.bytes += len(body.encode("utf-8", errors="ignore"))
                 page = extract(body, final)
-                page.update(depth=depth, status=status, fetch_ms=int((time.perf_counter() - t0) * 1000))
+                page.update(depth=depth, status=status, fetch_ms=int((time.perf_counter() - t0) * 1000),
+                            relevance=round(scores.get(url, 0.0), 2), found_on=parents.get(url))
                 links = page.pop("links")
-                internal = [l for l in links if _same_site(l, start_url) and is_crawlable_link(l)]
+                internal = [l for l in links if _same_site(l["url"], start_url) and is_crawlable_link(l["url"])]
+                for l in internal:
+                    l["score"] = score_link(l, prefix, terms)
+                if prefix and any(l["score"] >= 6 for l in internal):
+                    # the user pointed at a section (a repo, a docs folder): stay inside it
+                    internal = [l for l in internal if l["score"] >= 6]
                 page["internal_links"] = len(internal)
                 page["external_links"] = len(links) - len(internal)
                 if len(st.pages) >= lim.max_pages:
                     events.emit("info", "page_discarded", url=url, reason="page limit reached")
                     return []
-                if True:
-                    st.pages.append(page)
-                    events.emit("info", "page_done", url=final, requested=url, depth=depth, status=status,
-                                title=page["title"][:120], words=page["word_count"],
-                                ms=page["fetch_ms"], count=len(st.pages), parent=parents.get(url))
+                st.pages.append(page)
+                events.emit("info", "page_done", url=final, requested=url, depth=depth, status=status,
+                            title=page["title"][:120], words=page["word_count"],
+                            ms=page["fetch_ms"], count=len(st.pages), parent=parents.get(url),
+                            relevance=round(scores.get(url, 0.0), 2))
                 return internal
 
         for depth in range(lim.max_depth + 1):
             if not frontier or len(st.pages) >= lim.max_pages:
                 break
             results = await asyncio.gather(*(visit(u, depth) for u in frontier))
-            nxt: list[str] = []
+            cand: list[tuple[float, str, str]] = []
             for parent, found in zip(frontier, results):
-                for link in found:
-                    c = canonical(link)
-                    if c in seen:
-                        continue
-                    seen.add(c)
-                    if rp is not None and not rp.can_fetch(USER_AGENT, link):
-                        st.skipped.append({"url": link, "reason": "robots.txt"})
-                        continue
-                    nxt.append(link)
-                    parents[link] = parent
-                    events.emit("debug", "link_queued", url=link, parent=parent, depth=depth + 1)
+                for item in found:
+                    cand.append((item["score"], item["url"], parent))
+            cand.sort(key=lambda x: -x[0])
+            nxt: list[str] = []
+            for sc, link, parent in cand:
+                c = canonical(link)
+                if c in seen:
+                    continue
+                seen.add(c)
+                if rp is not None and not rp.can_fetch(USER_AGENT, link):
+                    st.skipped.append({"url": link, "reason": "robots.txt"})
+                    continue
+                nxt.append(link)
+                parents[link] = parent
+                scores[link] = sc
+                events.emit("debug", "link_queued", url=link, parent=parent, depth=depth + 1)
             remaining = lim.max_pages - len(st.pages)
             frontier = nxt[: max(remaining, 0) * 2]  # small buffer for failures

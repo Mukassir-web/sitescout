@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import type { RunView } from "../types";
 import { JsonView } from "./JsonView";
@@ -19,11 +19,13 @@ function headline(run: RunView) {
   }
 }
 
-export function ResultMessage({ run, selected, onSelect }: { run: RunView; selected: boolean; onSelect: () => void }) {
+export function ResultMessage({ run, selected, onSelect, onAsk }: {
+  run: RunView; selected: boolean; onSelect: () => void; onAsk?: (q: string) => void;
+}) {
   const r = run.result;
   const live = LIVE.includes(run.stage) && !run.ended && !r;
   const wantsJson = r?.outputs?.includes("json") && !r?.outputs?.includes("summary");
-  const [tab, setTab] = useState<Tab>(wantsJson ? "json" : "summary");
+  const [tab, setTab] = useState<Tab | null>(wantsJson ? "json" : null);
   const meta = statusMeta(run.stage);
 
   if (live) {
@@ -70,7 +72,10 @@ export function ResultMessage({ run, selected, onSelect }: { run: RunView; selec
               : "Check the address and try again, or ask for fewer pages."}
           </p>
         </div>
-      ) : head && <p className="text-[17px] leading-relaxed">{head}</p>}
+      ) : null}
+
+      {!failed && <Answer run={run} onAsk={onAsk} />}
+      {!failed && head && <p className="text-[13.5px] text-graphite">{head}</p>}
 
       {r.warning && <p className="text-[13px] text-ochre">{r.warning}</p>}
 
@@ -78,25 +83,85 @@ export function ResultMessage({ run, selected, onSelect }: { run: RunView; selec
         <>
           <div role="tablist" className="relative inline-flex gap-1 p-1 rounded-xl bg-sheet border border-rule">
             {(["summary", "json", "pages", "run"] as Tab[]).map((t) => (
-              <button key={t} role="tab" aria-selected={tab === t} onClick={() => setTab(t)}
+              <button key={t} role="tab" aria-selected={tab === t} onClick={() => setTab(tab === t ? null : t)}
                 className={`relative h-8 px-3.5 rounded-lg text-[13.5px] transition-colors ${tab === t ? "text-ink" : "text-graphite hover:text-ink"}`}>
                 {tab === t && <motion.span layoutId={`tab-${run.id}`} className="absolute inset-0 rounded-lg bg-fog border border-rule" transition={{ type: "spring", stiffness: 500, damping: 38 }} />}
-                <span className="relative">{{ summary: "Summary", json: "JSON", pages: "Pages", run: "Execution" }[t]}</span>
+                <span className="relative">{{ summary: "Overview", json: "JSON", pages: "Pages", run: "Execution" }[t]}</span>
               </button>
             ))}
           </div>
 
           <AnimatePresence mode="wait" initial={false}>
-            <motion.div key={tab} initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} transition={{ duration: 0.18 }}>
+            {tab && <motion.div key={tab} initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} transition={{ duration: 0.18 }}>
               {tab === "summary" && <SummaryTab run={run} />}
               {tab === "json" && <JsonView data={data} filename={`${host(run.task?.url) || "sitescout"}.json`} />}
               {tab === "pages" && <PagesTab pages={data!.pages} />}
               {tab === "run" && <ExecutionTab run={run} />}
-            </motion.div>
+            </motion.div>}
           </AnimatePresence>
         </>
       )}
     </div>
+  );
+}
+
+/** Render the model's answer: plain sentences plus optional "- " list items. Text only, never HTML. */
+function AnswerText({ text }: { text: string }) {
+  const lines = text.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+  const blocks: { kind: "p" | "li"; text: string }[] = lines.map((l) =>
+    /^[-*\u2022]\s+/.test(l) || /^\d+[.)]\s+/.test(l) ? { kind: "li", text: l.replace(/^([-*\u2022]|\d+[.)])\s+/, "") } : { kind: "p", text: l });
+  const out: ReactNode[] = [];
+  let list: string[] = [];
+  const flush = () => {
+    if (list.length) {
+      out.push(<ul key={"u" + out.length} className="mt-2 space-y-1.5 font-sans text-[15.5px] leading-relaxed">
+        {list.map((t, i) => <li key={i} className="flex gap-3"><span className="mt-[10px] h-[5px] w-[5px] shrink-0 rounded-full bg-ink" />{t}</li>)}
+      </ul>);
+      list = [];
+    }
+  };
+  blocks.forEach((b) => {
+    if (b.kind === "li") list.push(b.text);
+    else { flush(); out.push(<p key={"p" + out.length} className={out.length ? "mt-2" : ""}>{b.text}</p>); }
+  });
+  flush();
+  return <>{out}</>;
+}
+
+function Answer({ run, onAsk }: { run: RunView; onAsk?: (q: string) => void }) {
+  const ins = run.result?.summary ?? run.result?.data?.insights;
+  if (!ins) return null;
+  const answer = ins.answer || ins.summary;
+  const pages: any[] = run.result?.data?.pages ?? [];
+  const titleOf = (u: string) => pages.find((p) => p.url === u)?.title || (() => { try { const x = new URL(u); return x.pathname === "/" ? x.hostname : x.pathname; } catch { return u; } })();
+  return (
+    <section className="max-w-[64ch]" aria-label="Answer">
+      <div className="font-serif text-[19px] leading-[1.6] text-ink"><AnswerText text={answer} /></div>
+      {ins.answer_found === false && (
+        <p className="mt-3 text-[13.5px] text-ochre">The crawled pages didn't contain a complete answer. Try pointing me at a more specific page, or ask for more pages.</p>
+      )}
+      {ins.sources?.length > 0 && (
+        <div className="mt-4 flex flex-wrap items-center gap-1.5 text-[12.5px]">
+          <span className="text-graphite mr-1">From</span>
+          {ins.sources.map((u: string) => (
+            <a key={u} href={u} target="_blank" rel="noopener noreferrer nofollow" title={u}
+              className="max-w-[32ch] truncate px-2.5 h-7 inline-flex items-center rounded-full border border-rule bg-sheet text-graphite hover:text-cobalt hover:border-cobalt/40 transition-colors">
+              {titleOf(u)}
+            </a>
+          ))}
+        </div>
+      )}
+      {onAsk && ins.follow_ups?.length > 0 && (
+        <div className="mt-5 border-t border-rule">
+          {ins.follow_ups.map((q: string) => (
+            <button key={q} onClick={() => onAsk(q)}
+              className="w-full text-left py-2.5 border-b border-rule text-[14.5px] text-graphite hover:text-ink transition-colors">
+              {q}
+            </button>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -106,13 +171,7 @@ function SummaryTab({ run }: { run: RunView }) {
   if (!ins) return <p className="text-graphite">No summary was requested.</p>;
   return (
     <article className="max-w-[64ch]">
-      <p className="font-serif text-[19px] leading-[1.6] text-ink">{ins.summary}</p>
-      {ins.focus_answer && run.task?.focus && (
-        <div className="mt-5 pl-4 border-l-2 border-cobalt">
-          <div className="text-[13px] text-graphite">On {run.task.focus}</div>
-          <p className="font-serif text-[17px] leading-[1.6]">{ins.focus_answer}</p>
-        </div>
-      )}
+      <p className="font-serif text-[18px] leading-[1.6] text-ink">{ins.summary}</p>
       {ins.key_points?.length > 0 && (
         <ul className="mt-5 space-y-2 text-[15px] leading-relaxed">
           {ins.key_points.map((k: string, i: number) => (

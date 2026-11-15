@@ -8,8 +8,16 @@ from pydantic import BaseModel, Field, field_validator
 from .config import settings
 
 
+class Turn(BaseModel):
+    """A previous exchange the browser sends back so follow-ups ("how many commits?") keep context."""
+    prompt: str = Field(max_length=settings.max_prompt_chars)
+    url: Optional[str] = Field(default=None, max_length=500)
+    answer: Optional[str] = Field(default=None, max_length=600)
+
+
 class ChatRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=settings.max_prompt_chars)
+    history: list[Turn] = Field(default_factory=list, max_length=6)
 
     @field_validator("prompt")
     @classmethod
@@ -33,6 +41,7 @@ class TaskSpec(BaseModel):
     outputs: list[Output] = Field(default_factory=lambda: ["summary", "json"])
     focus: Optional[str] = Field(default=None, max_length=200)
     reply: Optional[str] = Field(default=None, max_length=400)
+    question: str = Field(default="", max_length=settings.max_prompt_chars)
     interpreted_by: Literal["llm", "rules"] = "llm"
 
     @field_validator("outputs")
@@ -48,4 +57,7 @@ class Insights(BaseModel):
     site_type: str = Field(default="", max_length=80)
     audience: str = Field(default="", max_length=160)
     topics: list[str] = Field(default_factory=list, max_length=10)
-    focus_answer: Optional[str] = Field(default=None, max_length=800)
+    answer: str = Field(default="", max_length=1200)
+    answer_found: bool = True
+    sources: list[str] = Field(default_factory=list, max_length=6)
+    follow_ups: list[str] = Field(default_factory=list, max_length=3)

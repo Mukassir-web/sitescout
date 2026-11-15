@@ -55,7 +55,7 @@ async def create_run(request: Request):
         body = ChatRequest.model_validate(await request.json())
     except (ValidationError, ValueError):
         raise HTTPException(422, f"Send a JSON body like {{\"prompt\": \"...\"}} (max {settings.max_prompt_chars} chars).")
-    run = runner.new_run(body.prompt)
+    run = runner.new_run(body.prompt, body.history)
     return {"id": run.id, "state": run.state}
 
 

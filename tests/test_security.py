@@ -41,7 +41,30 @@ def test_extract_fields():
     assert p["title"] == "Acme" and p["description"] == "Tools"
     assert "hi@acme.io" in p["emails"] and p["social"]["github"].startswith("https://github.com/acme")
     assert "steal" not in p["text_excerpt"] and "menu" not in p["text_excerpt"]
-    assert "https://acme.io/about" in p["links"]
+    assert "https://acme.io/about" in [l["url"] for l in p["links"]]
+
+
+def test_crawl_stays_inside_the_section_and_ranks_by_focus():
+    from sitecrawl.crawler import focus_terms, scope_prefix, score_link
+    assert scope_prefix("https://github.com/owner/repo") == "/owner/repo"
+    assert scope_prefix("https://x.com/docs/intro.html") == "/docs"
+    assert scope_prefix("https://x.com/") == ""
+    terms = focus_terms("how many commits does it have")
+    assert terms == ["commit"]
+    commits = {"url": "https://github.com/owner/repo/commits/main", "text": "6 Commits", "in_content": True}
+    issues = {"url": "https://github.com/owner/repo/issues", "text": "Issues", "in_content": True}
+    copilot = {"url": "https://github.com/features/copilot", "text": "Copilot", "in_content": False}
+    s = lambda l: score_link(l, "/owner/repo", terms)
+    assert s(commits) > s(issues) > s(copilot)
+
+
+def test_follow_up_may_reuse_a_site_from_history_but_not_a_new_one():
+    from app.intent import _allowed_hosts, _last_url
+    from app.schemas import Turn
+    hist = [Turn(prompt="tell me about https://github.com/owner/repo", url="https://github.com/owner/repo")]
+    assert "github.com" in _allowed_hosts("how many commits does it have?", hist)
+    assert "evil.example" not in _allowed_hosts("how many commits does it have?", hist)
+    assert _last_url("and the architecture?", hist) == "https://github.com/owner/repo"
 
 
 def run_cli(*args):
@@ -69,6 +92,9 @@ def test_backend_never_builds_shell_strings():
     t = TaskSpec(action="crawl_site", url="https://example.com/;rm -rf /", max_pages=3, depth=1)
     argv = build_argv(t)
     assert isinstance(argv, list) and argv[argv.index("--url") + 1] == "https://example.com/;rm -rf /"
+    t2 = TaskSpec(action="crawl_site", url="https://example.com", focus="pricing; $(reboot) `id`")
+    a2 = build_argv(t2)
+    assert "$" not in a2[a2.index("--focus") + 1] and "`" not in a2[a2.index("--focus") + 1]
 
 
 def test_redaction():

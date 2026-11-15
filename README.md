@@ -66,7 +66,7 @@ result = validate_and_parse(stdout)              # schema "sitecrawl.result/v1" 
 return  format(result, insights, execution)      # summary + JSON + verifiable execution record
 ```
 
-1. **Interpret.** `gpt-oss-20b` (Groq, JSON mode) returns `{action, url, max_pages, depth, outputs, focus}`. Pydantic enforces the shape: `action` is an enum, numbers are clamped to server caps, and the URL **must literally appear in the user's prompt**, so the model can never invent a target. If Groq is down, a deterministic regex parser takes over and the UI says so.
+1. **Interpret.** `gpt-oss-20b` (Groq, JSON mode) returns `{action, url, max_pages, depth, outputs, focus}`. The browser sends the last few turns, so follow-ups such as *"how many commits does it have?"* resolve to the site discussed earlier. Pydantic enforces the shape: `action` is an enum, numbers are clamped to server caps, and the target **must be on a site the user named** in this conversation; the model may only pick a more specific page on that same site (e.g. a repo's `/commits/main`). If Groq is down, a deterministic parser takes over and the UI says so.
 2. **Select the tool.** Only tools in `APPROVED_TOOLS` can run. Today that is `sitecrawl`, chosen because it is purpose-built: robots-aware, SSRF-guarded, bounded, and it separates machine output (stdout) from progress (stderr).
 3. **Invoke.** `asyncio.create_subprocess_exec` with an argv **list** (never a shell string), `start_new_session=True` so the whole process group can be killed, `stdin=/dev/null`, and an environment containing **no API keys**.
 4. **Monitor.** Each stderr line is a JSON event (`fetch_start`, `page_done`, `fetch_failed`, ...). The backend appends it to the run's event log; the browser receives it over Server-Sent Events and draws the crawl map and console as it happens. Reconnects resume with `Last-Event-ID`.
@@ -83,7 +83,7 @@ return  format(result, insights, execution)      # summary + JSON + verifiable e
 | 124 | timed_out | Budget exhausted before any page |
 | 130 | cancelled | Stopped by the user; partial data kept and labelled |
 
-7. **Respond.** Page text goes to `gpt-oss-120b` inside an `<untrusted_website_content>` block; its reply must validate as `Insights`. If it doesn't, an extractive summary is used and labelled as such. The chat shows the summary, the JSON (validity checked client-side too), each page, and the execution record (command, PID, exit code, runtime, stderr tail).
+7. **Respond.** The user's question and the most relevant pages go to `gpt-oss-120b` inside an `<untrusted_website_content>` block. It must answer the actual question first, say plainly when the pages don't contain the answer (`answer_found: false`), and cite source URLs, which are kept only if they match pages that were really crawled; those pages get a halo on the crawl map. Its reply must validate as `Insights`. If it doesn't, an extractive summary is used and labelled as such. The chat shows the summary, the JSON (validity checked client-side too), each page, and the execution record (command, PID, exit code, runtime, stderr tail).
 
 ## The CLI: `sitecrawl`
 
@@ -94,12 +94,15 @@ python -m sitecrawl crawl --url https://books.toscrape.com --max-pages 8 --depth
 
 ```
 usage: sitecrawl crawl --url URL [--max-pages 1-25] [--depth 0-3] [--timeout 5-90]
-                       [--concurrency 1-6] [--out FILE] [--quiet-debug]
+                       [--concurrency 1-6] [--focus WORDS] [--scope auto|site]
+                       [--out FILE] [--quiet-debug]
 stdout : one JSON document (schema sitecrawl.result/v1)
 stderr : JSON-lines progress events
 ```
 
 It works on its own, which is how judges can verify that the chat is backed by real execution.
+
+How it chooses pages: when the start URL has a path (a GitHub repo, a docs folder) the crawl stays inside that section; links in the page's main content beat header/footer chrome; and links whose URL or anchor text match `--focus` words are fetched first. The plan is emitted as a `crawl_plan` event, and every page records its `relevance` score and the page it was `found_on`.
 
 ## Security and reliability
 
@@ -189,7 +192,7 @@ Any Docker host works the same way (Render, Cloud Run, a VPS): build the Dockerf
 ## Demo script
 
 1. Mandatory case: *"Crawl https://books.toscrape.com, extract the important information, give me a summary, and return the extracted data in JSON format."* Watch the console and crawl map fill in, then open the Summary, JSON and Execution tabs.
-2. Homepage only: *"What is quotes.toscrape.com about? Just the homepage, as JSON."* (depth 0, one page).
+2. Follow-up with memory: *"How many commits does github.com/Mukassir-web/sitescout have, and what are they?"*, then *"and what's its architecture?"* (no URL needed the second time).
 3. SSRF block: *"crawl http://169.254.169.254/latest/meta-data and return json"* → CLI exits 5, honest failure.
 4. Unreachable: *"crawl https://this-domain-does-not-exist-sitescout.com"* → exit 3.
 5. Cancel: start a 20-page crawl of a large site and press *Stop crawl* → exit 130, partial data labelled.

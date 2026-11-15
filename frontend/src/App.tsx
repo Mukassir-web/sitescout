@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { X } from "lucide-react";
-import { startRun, cancelRun, subscribe } from "./api";
+import { startRun, cancelRun, subscribe, historyOf } from "./api";
 import type { RunView } from "./types";
 import { Composer } from "./components/Composer";
 import { Inspector } from "./components/Inspector";
@@ -10,7 +10,7 @@ import { LIVE } from "./components/status";
 
 const EXAMPLES = [
   "Crawl https://books.toscrape.com, extract the important information, give me a summary, and return the extracted data in JSON format.",
-  "What is quotes.toscrape.com about? Just the homepage, as JSON.",
+  "How many commits does github.com/Mukassir-web/sitescout have, and what are they?",
   "Summarise python.org and pull out any contact details.",
 ];
 const STORE = "sitescout.runs.v1";
@@ -31,6 +31,8 @@ export default function App() {
   const [sheet, setSheet] = useState(false);
   const bottom = useRef<HTMLDivElement>(null);
   const subs = useRef<Record<string, () => void>>({});
+  const runsRef = useRef(runs);
+  runsRef.current = runs;
 
   useEffect(() => {
     const done = runs.filter((r) => r.ended).slice(-12).map((r) => ({ ...r, logs: r.logs.slice(-120) }));
@@ -48,7 +50,7 @@ export default function App() {
     setError(null);
     setDraft("");
     try {
-      const id = await startRun(prompt);
+      const id = await startRun(prompt, historyOf(runsRef.current));
       const run: RunView = { id, prompt, createdAt: Date.now(), stage: "queued", stageLabel: "Queued", logs: [], nodes: {}, ended: false };
       setRuns((rs) => [...rs, run]);
       setSelected(id);
@@ -115,7 +117,8 @@ export default function App() {
                         <p className="text-[21px] leading-snug font-medium tracking-[-0.015em] max-w-[52ch]">{run.prompt}</p>
                         <div className="mt-5">
                           <ResultMessage run={run} selected={selected === run.id}
-                            onSelect={() => { setSelected(run.id); setSheet(true); }} />
+                            onSelect={() => { setSelected(run.id); setSheet(true); }}
+                            onAsk={busy ? undefined : (q) => submit(q)} />
                         </div>
                       </motion.article>
                     ))}

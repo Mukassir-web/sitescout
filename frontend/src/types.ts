@@ -33,7 +33,11 @@ export interface Insights {
   site_type: string;
   audience: string;
   topics: string[];
-  focus_answer: string | null;
+  answer: string;
+  answer_found: boolean;
+  sources: string[];
+  follow_ups: string[];
+  generated_by?: string;
 }
 
 export interface Execution {
@@ -69,6 +73,9 @@ export interface CrawlNode {
   title?: string;
   status?: number;
   ms?: number;
+  words?: number;
+  relevance?: number;
+  t?: number;
   order: number;
 }
 

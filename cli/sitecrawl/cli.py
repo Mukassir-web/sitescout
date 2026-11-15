@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import signal
 import sys
 import time
@@ -37,6 +38,14 @@ def _bounded(name: str, lo: int, hi: int):
     return parse
 
 
+def _focus(v: str) -> str:
+    v = re.sub(r"[^\w\s.,'-]", " ", v, flags=re.UNICODE)
+    v = re.sub(r"\s+", " ", v).strip()
+    if len(v) > 160:
+        raise argparse.ArgumentTypeError("focus must be at most 160 characters")
+    return v
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="sitecrawl", description="Bounded, robots-aware website crawler.")
     p.add_argument("--version", action="version", version=f"sitecrawl {__version__}")
@@ -47,6 +56,10 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--depth", type=_bounded("depth", 0, HARD_CAPS["depth"]), default=2)
     c.add_argument("--timeout", type=_bounded("timeout", 5, HARD_CAPS["timeout"]), default=45)
     c.add_argument("--concurrency", type=_bounded("concurrency", 1, 6), default=4)
+    c.add_argument("--focus", type=_focus, default="",
+                   help="what the user is looking for; links matching these words are crawled first")
+    c.add_argument("--scope", choices=["auto", "site"], default="auto",
+                   help="auto: stay under the start URL's path when it has one; site: whole site")
     c.add_argument("--out", help="write result JSON to this file instead of stdout")
     c.add_argument("--quiet-debug", action="store_true", help="suppress debug events")
     return p
@@ -73,7 +86,8 @@ def _aggregate(st: CrawlState) -> dict:
 
 
 async def run(args) -> int:
-    lim = Limits(max_pages=args.max_pages, max_depth=args.depth, timeout=args.timeout, concurrency=args.concurrency)
+    lim = Limits(max_pages=args.max_pages, max_depth=args.depth, timeout=args.timeout,
+                 concurrency=args.concurrency, focus=args.focus, scope=args.scope)
     st = CrawlState()
     started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     t0 = time.perf_counter()
@@ -139,6 +153,8 @@ async def run(args) -> int:
         "final_url": st.start_final_url,
         "started_at": started,
         "limits": {"max_pages": lim.max_pages, "depth": lim.max_depth, "timeout_s": lim.timeout},
+        "focus": lim.focus or None,
+        "scope": lim.scope,
         "robots_txt": st.robots,
         "stats": {
             "pages_crawled": len(st.pages),

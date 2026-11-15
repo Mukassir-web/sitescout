@@ -16,7 +16,7 @@ SOCIAL_HOSTS = {
 }
 NOISE_TAGS = ["script", "style", "noscript", "svg", "template", "iframe", "form", "nav", "footer", "header", "aside"]
 SKIP_EXT = re.compile(r"\.(png|jpe?g|gif|webp|svg|ico|pdf|zip|gz|tar|mp4|mp3|wav|avi|mov|css|js|json|xml|woff2?|ttf|eot|exe|dmg|apk)$", re.I)
-TEXT_LIMIT = 4000
+TEXT_LIMIT = 6000
 
 
 def _clean(s: str | None) -> str:
@@ -55,7 +55,17 @@ def extract(html: str, url: str) -> dict:
         if len(headings) >= 25:
             break
 
-    links, emails, phones, social = [], set(), set(), {}
+    # the content region (main/article) is where the page's own links live; header/nav/footer
+    # links are site chrome and are ranked lower by the crawler
+    articles = tree.css("article")
+    body = tree.css_first("main") or (articles[0] if len(articles) == 1 else None) or tree.body
+    content_ids: set[int] = set()
+    if body is not None and body is not tree.body:
+        for a in body.css("a[href]"):
+            content_ids.add(hash((a.attributes.get("href"), _clean(a.text())[:80])))
+
+    links: dict[str, dict] = {}
+    emails, phones, social = set(), set(), {}
     for a in tree.css("a[href]"):
         href = (a.attributes.get("href") or "").strip()
         if not href or href.startswith("#") or href.lower().startswith("javascript:"):
@@ -76,11 +86,19 @@ def extract(html: str, url: str) -> dict:
         for sh, name in SOCIAL_HOSTS.items():
             if host == sh or host.endswith("." + sh):
                 social.setdefault(name, absu.split("#")[0])
-        links.append(urlunsplit((p.scheme, p.netloc, p.path or "/", p.query, "")))
+        clean = urlunsplit((p.scheme, p.netloc, p.path or "/", p.query, ""))
+        text = _clean(a.text())[:80] or _clean(a.attributes.get("aria-label") or a.attributes.get("title"))[:80]
+        in_content = hash((a.attributes.get("href"), _clean(a.text())[:80])) in content_ids or body is tree.body
+        key = canonical(clean)
+        prev = links.get(key)
+        if prev is None:
+            links[key] = {"url": clean, "text": text, "in_content": in_content}
+        else:
+            prev["in_content"] = prev["in_content"] or in_content
+            if not prev["text"] and text:
+                prev["text"] = text
 
     # main text
-    articles = tree.css("article")
-    body = tree.css_first("main") or (articles[0] if len(articles) == 1 else None) or tree.body
     text = ""
     if body is not None:
         for tag in NOISE_TAGS:
@@ -100,12 +118,18 @@ def extract(html: str, url: str) -> dict:
         "headings": headings,
         "text_excerpt": text[:TEXT_LIMIT],
         "word_count": len(text.split()),
-        "links": list({canonical(l): l for l in reversed(links)}.values())[::-1],
+        "links": list(links.values()),
         "emails": sorted(emails)[:20],
         "phones": sorted(phones)[:10],
         "social": social,
     }
 
 
+CHROME_PATH = re.compile(r"/(login|log-in|signin|sign-in|signup|sign-up|join|logout|register|cart|checkout|account|password_reset|session)(/|$)", re.I)
+
+
 def is_crawlable_link(url: str) -> bool:
-    return not SKIP_EXT.search(urlsplit(url).path)
+    p = urlsplit(url)
+    if SKIP_EXT.search(p.path) or CHROME_PATH.search(p.path):
+        return False
+    return "return_to=" not in p.query and "redirect" not in p.query.lower()

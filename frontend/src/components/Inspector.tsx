@@ -32,6 +32,8 @@ export function Inspector({ run, onCancel }: { run: RunView | null; onCancel: (i
   const badIndex = failedStep ? (run.command ? 1 : 0) : -1;
   const idx = failedStep ? badIndex : stepIndex(run);
   const exec = run.result?.execution;
+  const planEv = run.logs.find((l) => l.event === "crawl_plan");
+  const plan = planEv ? { scope: String(planEv.scope ?? "/"), terms: (planEv.focus_terms as string[] | undefined) ?? [] } : null;
 
   return (
     <div className="h-full overflow-y-auto scroll-quiet px-6 py-6 space-y-6">
@@ -79,7 +81,9 @@ export function Inspector({ run, onCancel }: { run: RunView | null; onCancel: (i
           <dl className="grid grid-cols-[auto_1fr] gap-x-5 gap-y-1.5">
             <dt className="text-graphite">Target</dt><dd className="truncate">{run.task.url}</dd>
             <dt className="text-graphite">Limits</dt><dd>up to {run.task.max_pages} pages, depth {run.task.depth}</dd>
-            <dt className="text-graphite">Return</dt><dd>{run.task.outputs.join(" and ")}{run.task.focus ? `, focused on ${run.task.focus}` : ""}</dd>
+            <dt className="text-graphite">Return</dt><dd>answer, {run.task.outputs.join(" and ")}</dd>
+            {run.task.focus && <><dt className="text-graphite">Focus</dt><dd>{run.task.focus}</dd></>}
+            {plan && <><dt className="text-graphite">Crawl plan</dt><dd>stay inside {plan.scope}{plan.terms.length ? `, links about ${plan.terms.join(", ")} first` : ""}</dd></>}
             <dt className="text-graphite">Parsed by</dt><dd>{run.task.interpreted_by === "llm" ? "Groq model, schema-checked" : "rule-based fallback"}</dd>
           </dl>
         </section>
@@ -87,7 +91,8 @@ export function Inspector({ run, onCancel }: { run: RunView | null; onCancel: (i
 
       {(Object.keys(run.nodes).length > 0 || (live && run.stage === "executing")) && (
         <section aria-label="Crawl map">
-          <CrawlMap nodes={run.nodes} live={live && run.stage === "executing"} />
+          <CrawlMap nodes={run.nodes} live={live && run.stage === "executing"} ended={run.ended}
+            sources={run.result?.summary?.sources ?? run.result?.data?.insights?.sources ?? []} />
         </section>
       )}
 

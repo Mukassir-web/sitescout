@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import os
 import signal
 import tempfile
@@ -40,7 +41,7 @@ APPROVED_TOOLS = {
 EXIT_MEANINGS = {
     0: ("succeeded", "Crawl completed."),
     2: ("partial", "Crawl finished with some pages failing or the time budget running out."),
-    3: ("failed", "The website could not be reached."),
+    3: ("failed", "The website could not be reached, or it refused the request."),
     4: ("failed", "The site's robots.txt does not allow crawling this URL."),
     5: ("failed", "The URL was rejected as invalid or unsafe."),
     124: ("timed_out", "The crawl hit its time limit before any page was fetched."),
@@ -56,6 +57,7 @@ MAX_RUNS_KEPT = 200
 class Run:
     id: str
     prompt: str
+    history: list = field(default_factory=list)
     created: float = field(default_factory=time.time)
     state: str = "queued"  # queued|interpreting|executing|processing|succeeded|partial|failed|timed_out|cancelled|rejected
     events: list[dict] = field(default_factory=list)
@@ -84,8 +86,13 @@ class Run:
 
 def build_argv(task: TaskSpec) -> list[str]:
     tool = APPROVED_TOOLS["sitecrawl"]
-    return [*tool["argv"], "--url", task.url, "--max-pages", str(task.max_pages), "--depth", str(task.depth),
+    argv = [*tool["argv"], "--url", task.url, "--max-pages", str(task.max_pages), "--depth", str(task.depth),
             "--timeout", str(settings.crawl_timeout_s), "--quiet-debug"]
+    focus = re.sub(r"[^\w\s.,'-]", " ", task.focus or "")
+    focus = re.sub(r"\s+", " ", focus).strip()[:160]
+    if focus:
+        argv += ["--focus", focus]
+    return argv
 
 
 def display_argv(argv: list[str]) -> str:
@@ -225,7 +232,7 @@ async def _pipeline(run: Run) -> None:
     # 1. Interpret ---------------------------------------------------------------
     await run.stage("interpreting", "Understanding your request")
     guard_task = asyncio.create_task(injection_score(run.prompt))
-    task, warn = await interpret(run.prompt)
+    task, warn = await interpret(run.prompt, run.history)
     score = await guard_task
     if score is not None and score >= 0.9 and task.action == "crawl_site":
         run.state = "rejected"
@@ -284,7 +291,7 @@ async def _pipeline(run: Run) -> None:
         "message": meaning,
         "error": redact(parsed.get("error")) if parsed and parsed.get("error") else None,
         "outputs": task.outputs,
-        "summary": insights.model_dump() if insights and "summary" in task.outputs else None,
+        "summary": insights.model_dump() if insights else None,
         "summary_source": summary_source,
         "data": data,
         "execution": execution | {"stderr_tail": cap["stderr_tail"]},
@@ -293,12 +300,12 @@ async def _pipeline(run: Run) -> None:
     await run.emit("result", run.final)
 
 
-def new_run(prompt: str) -> Run:
+def new_run(prompt: str, history=None) -> Run:
     if len(RUNS) >= MAX_RUNS_KEPT:
         for rid in sorted(RUNS, key=lambda r: RUNS[r].created)[: len(RUNS) - MAX_RUNS_KEPT + 1]:
             if RUNS[rid].done:
                 RUNS.pop(rid, None)
-    run = Run(id=uuid.uuid4().hex[:12], prompt=prompt)
+    run = Run(id=uuid.uuid4().hex[:12], prompt=prompt, history=list(history or []))
     RUNS[run.id] = run
     run.task = asyncio.create_task(pipeline(run))
     return run

@@ -22,6 +22,11 @@ function line(e: LogEvent): { tone: string; text: string } | null {
     case "invalid_input": case "unreachable": case "crawl_failed": return { tone: "text-[#F29C8A]", text: `error  ${e.message}` };
     case "crawl_end": return { tone: e.exit_code === 0 ? "text-[#8FD3A8]" : "text-[#F2C77C]", text: `exit ${e.exit_code}  ${e.status}  ${e.pages} pages in ${e.ms}ms` };
     case "page_discarded": return { tone: "text-[#8B93A1]", text: `skip   ${short(e.url)}  page limit reached` };
+    case "crawl_plan": {
+      const terms = (e.focus_terms as string[] | undefined) ?? [];
+      return { tone: "text-[#8B93A1]", text: `plan   scope ${e.scope}${terms.length ? `  rank: ${terms.join(", ")}` : ""}` };
+    }
+    case "rate_limited": return { tone: "text-[#F2C77C]", text: `429    ${short(e.url)}  rate limited, retrying in ${e.retry_in_s}s` };
     case "link_queued": return null;
     default: return { tone: "text-[#8B93A1]", text: `${e.event} ${e.message ?? ""}` };
   }
