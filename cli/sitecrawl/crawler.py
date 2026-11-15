@@ -119,6 +119,7 @@ async def crawl(start_url: str, lim: Limits, st: CrawlState) -> None:
 
         seen: set[str] = {canonical(start_url)}
         frontier: list[str] = [start_url]
+        parents: dict[str, str | None] = {start_url: None}
         sem = asyncio.Semaphore(lim.concurrency)
 
         async def visit(url: str, depth: int) -> list[str]:
@@ -150,7 +151,7 @@ async def crawl(start_url: str, lim: Limits, st: CrawlState) -> None:
                     st.pages.append(page)
                     events.emit("info", "page_done", url=final, depth=depth, status=status,
                                 title=page["title"][:120], words=page["word_count"],
-                                ms=page["fetch_ms"], count=len(st.pages), parent=None)
+                                ms=page["fetch_ms"], count=len(st.pages), parent=parents.get(url))
                 return internal
 
         for depth in range(lim.max_depth + 1):
@@ -168,6 +169,7 @@ async def crawl(start_url: str, lim: Limits, st: CrawlState) -> None:
                         st.skipped.append({"url": link, "reason": "robots.txt"})
                         continue
                     nxt.append(link)
+                    parents[link] = parent
                     events.emit("debug", "link_queued", url=link, parent=parent, depth=depth + 1)
             remaining = lim.max_pages - len(st.pages)
             frontier = nxt[: max(remaining, 0) * 2]  # small buffer for failures
