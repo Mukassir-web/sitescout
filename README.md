@@ -192,7 +192,7 @@ Any Docker host works the same way (Render, Cloud Run, a VPS): build the Dockerf
 ## Demo script
 
 1. Mandatory case: *"Crawl https://books.toscrape.com, extract the important information, give me a summary, and return the extracted data in JSON format."* Watch the console and crawl map fill in, then open the Summary, JSON and Execution tabs.
-2. Follow-up with memory: *"How many commits does github.com/Mukassir-web/sitescout have, and what are they?"*, then *"and what's its architecture?"* (no URL needed the second time).
+2. Follow-up with memory: *"What does books.toscrape.com sell?"*, then *"What do the poetry books cost?"* (no URL needed the second time; it finds the poetry category page). Note: GitHub often answers HTTP 429 to shared cloud IPs such as Render's, and SiteScout reports that honestly as a failed run rather than guessing.
 3. SSRF block: *"crawl http://169.254.169.254/latest/meta-data and return json"* → CLI exits 5, honest failure.
 4. Unreachable: *"crawl https://this-domain-does-not-exist-sitescout.com"* → exit 3.
 5. Cancel: start a 20-page crawl of a large site and press *Stop crawl* → exit 130, partial data labelled.

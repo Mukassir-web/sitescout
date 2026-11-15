@@ -10,7 +10,7 @@ import { LIVE } from "./components/status";
 
 const EXAMPLES = [
   "Crawl https://books.toscrape.com, extract the important information, give me a summary, and return the extracted data in JSON format.",
-  "How many commits does github.com/Mukassir-web/sitescout have, and what are they?",
+  "Which authors are quoted most on quotes.toscrape.com, and what are their best-known quotes?",
   "Summarise python.org and pull out any contact details.",
 ];
 const STORE = "sitescout.runs.v1";
