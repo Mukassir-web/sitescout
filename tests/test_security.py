@@ -100,3 +100,33 @@ def test_backend_never_builds_shell_strings():
 def test_redaction():
     from app.security import redact
     assert "gsk_" not in redact("key gsk_" + "a" * 40)
+
+
+def test_repeated_cards_become_records_with_exact_max_over_all_rows():
+    from sitecrawl.extract import extract
+    cards = "".join(
+        f'<div class="row"><div class="col-md-4 country"><h3 class="country-name"><i class="flag"></i> {n}</h3>'
+        f'<span class="country-capital">{c}</span><span class="country-area">{a}</span></div></div>'
+        for n, c, a in [("Andorra", "Andorra la Vella", "468.0"), ("Antarctica", "None", "1.4E7"), ("Brazil", "Brasilia", "8511965.0"),
+                        ("Chad", "N'Djamena", "1284000.0"), ("Russia", "Moscow", "1.71E7"), ("Zambia", "Lusaka", "752614.0")])
+    page = extract(f"<html><body>{cards}{'filler text ' * 2000}</body></html>", "https://x.test/")
+    rec = page["records"][0]
+    assert rec["total"] == 6 and "country-area" in rec["columns"]
+    assert rec["numeric_stats"]["country-area"]["max_row"] == "Russia"
+    assert page["text_truncated"] is True
+
+
+def test_context_puts_computed_facts_before_trimmed_text():
+    from app.summarize import build_context
+    page = {"url": "https://x.test/", "title": "t", "description": "", "headings": [], "text_excerpt": "a " * 5000,
+            "text_truncated": True, "records": [{"selector": "div.country", "columns": ["name", "area"], "total": 2,
+            "rows": [["A", "1"], ["B", "2"]], "numeric_stats": {"area": {"max": 2, "max_row": "B", "min": 1, "min_row": "A", "count": 2}}}]}
+    ctx = build_context({"site": {}, "pages": [page]})
+    assert "largest area = 2 (B)" in ctx and ctx.index("largest area") < ctx.index("Text")
+
+
+def test_github_repo_urls_use_the_official_api_but_other_pages_do_not():
+    from sitecrawl.github import repo_of
+    assert repo_of("https://github.com/owner/repo/commits/main") == ("owner", "repo", "commits/main")
+    assert repo_of("https://github.com/features/copilot") is None
+    assert repo_of("https://gitlab.com/owner/repo") is None

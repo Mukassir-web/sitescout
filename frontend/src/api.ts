@@ -1,4 +1,4 @@
-import type { RunView, LogEvent, CrawlNode } from "./types";
+import type { RunView, LogEvent, CrawlNode, PagePreview } from "./types";
 
 export interface Turn { prompt: string; url?: string | null; answer?: string | null }
 
@@ -56,6 +56,7 @@ export function subscribe(id: string, patch: Patch): () => void {
           parent: (d.depth ?? 0) === 0 ? null : (d.parent ?? prev?.parent ?? null),
           state: "done", title: d.title, status: d.status, ms: d.ms, words: d.words,
           relevance: typeof d.relevance === "number" ? d.relevance : undefined, t: prev?.t ?? d.t,
+          preview: (d.preview as PagePreview | undefined) ?? prev?.preview,
         };
       } else if (url && d.event === "page_discarded") {
         const k = Object.keys(nodes).find((u) => u === url) ?? url;

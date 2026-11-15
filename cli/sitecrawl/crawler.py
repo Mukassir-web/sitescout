@@ -12,6 +12,7 @@ import httpx
 
 from . import events
 from .extract import canonical, extract, is_crawlable_link
+from .github import GitHubUnavailable, fetch_repo, repo_of
 from .netguard import UnresolvableHostError, UnsafeURLError, check_url
 
 USER_AGENT = "SiteScoutBot/1.0 (+educational crawler; respects robots.txt)"
@@ -168,6 +169,25 @@ def score_link(link: dict, prefix: str, terms: list[str]) -> float:
 
 
 async def crawl(start_url: str, lim: Limits, st: CrawlState) -> None:
+    gh = repo_of(start_url)
+    if gh:
+        events.emit("info", "crawl_plan", scope=f"/{gh[0]}/{gh[1]}", focus_terms=focus_terms(lim.focus),
+                    source="GitHub REST API")
+        try:
+            pages = await asyncio.wait_for(fetch_repo(*gh, USER_AGENT, lim.request_timeout), lim.timeout)
+            want_commits = "commit" in gh[2].lower() or "commit" in lim.focus.lower()
+            if lim.max_pages == 1:
+                pages = [pages[1] if want_commits else pages[0]]
+            st.pages.extend(pages)
+            st.start_final_url = pages[0]["url"]
+            st.robots = "not_applicable (official API)"
+            for pg in st.pages:
+                pg.pop("links", None)
+                pg.setdefault("internal_links", 0)
+                pg.setdefault("external_links", 0)
+            return
+        except (GitHubUnavailable, httpx.HTTPError, asyncio.TimeoutError) as exc:
+            events.emit("warn", "source_fallback", source="GitHub REST API", message=str(exc) or type(exc).__name__)
     headers = {"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.5"}
     async with httpx.AsyncClient(headers=headers, follow_redirects=False, http2=False) as client:
         rp = await load_robots(client, start_url, lim, st) if lim.respect_robots else None
@@ -226,7 +246,16 @@ async def crawl(start_url: str, lim: Limits, st: CrawlState) -> None:
                 events.emit("info", "page_done", url=final, requested=url, depth=depth, status=status,
                             title=page["title"][:120], words=page["word_count"],
                             ms=page["fetch_ms"], count=len(st.pages), parent=parents.get(url),
-                            relevance=round(scores.get(url, 0.0), 2))
+                            relevance=round(scores.get(url, 0.0), 2),
+                            preview={
+                                "description": page["description"][:200],
+                                "headings": [h["text"][:90] for h in page["headings"][:5]],
+                                "lead": page["text_excerpt"][:320],
+                                "records": [{"what": r.get("selector") or "table", "count": r["total"],
+                                             "columns": r["columns"][:5]} for r in page.get("records", [])][:3],
+                                "links": len(links), "chars": page.get("text_chars", 0),
+                                "truncated": page.get("text_truncated", False),
+                            })
                 return internal
 
         for depth in range(lim.max_depth + 1):

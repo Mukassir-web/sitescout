@@ -77,6 +77,26 @@ export interface CrawlNode {
   relevance?: number;
   t?: number;
   order: number;
+  preview?: PagePreview;
+  prior?: boolean;   // crawled by an earlier question in this chat
+}
+
+export interface PagePreview {
+  description?: string;
+  headings?: string[];
+  lead?: string;
+  records?: { what: string; count: number; columns: string[] }[];
+  links?: number;
+  chars?: number;
+  truncated?: boolean;
+  source?: string;
+}
+
+export interface Chat {
+  id: string;
+  title: string;
+  createdAt: number;
+  runs: RunView[];
 }
 
 export interface RunView {

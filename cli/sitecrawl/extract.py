@@ -16,7 +16,8 @@ SOCIAL_HOSTS = {
 }
 NOISE_TAGS = ["script", "style", "noscript", "svg", "template", "iframe", "form", "nav", "footer", "header", "aside"]
 SKIP_EXT = re.compile(r"\.(png|jpe?g|gif|webp|svg|ico|pdf|zip|gz|tar|mp4|mp3|wav|avi|mov|css|js|json|xml|woff2?|ttf|eot|exe|dmg|apk)$", re.I)
-TEXT_LIMIT = 6000
+TEXT_LIMIT = 8000
+MAX_RECORDS = 400
 
 
 def _clean(s: str | None) -> str:
@@ -98,6 +99,8 @@ def extract(html: str, url: str) -> dict:
             if not prev["text"] and text:
                 prev["text"] = text
 
+    records = extract_records(tree)
+
     # main text
     text = ""
     if body is not None:
@@ -117,7 +120,10 @@ def extract(html: str, url: str) -> dict:
         "lang": lang[:10],
         "headings": headings,
         "text_excerpt": text[:TEXT_LIMIT],
+        "text_chars": len(text),
+        "text_truncated": len(text) > TEXT_LIMIT,
         "word_count": len(text.split()),
+        "records": records,
         "links": list(links.values()),
         "emails": sorted(emails)[:20],
         "phones": sorted(phones)[:10],
@@ -133,3 +139,108 @@ def is_crawlable_link(url: str) -> bool:
     if SKIP_EXT.search(p.path) or CHROME_PATH.search(p.path):
         return False
     return "return_to=" not in p.query and "redirect" not in p.query.lower()
+
+
+NUM_RE = re.compile(r"^[-+]?\$?£?€?\d[\d,]*(\.\d+)?([eE][-+]?\d+)?%?$")
+
+
+def to_number(v: str):
+    v = v.strip().replace(",", "").lstrip("$£€").rstrip("%")
+    try:
+        return float(v)
+    except ValueError:
+        return None
+
+
+def _table_records(tree: HTMLParser) -> list[dict]:
+    out = []
+    for t in tree.css("table"):
+        rows = t.css("tr")
+        if len(rows) < 3:
+            continue
+        head = [_clean(c.text())[:40] for c in rows[0].css("th")] or None
+        body_rows = rows[1:] if head else rows
+        data = []
+        for r in body_rows:
+            cells = [_clean(c.text())[:80] for c in r.css("td, th")]
+            if cells and any(cells):
+                data.append(cells)
+        if len(data) >= 2:
+            width = max(len(r) for r in data)
+            cols = (head or [])[:width] + [f"col{i+1}" for i in range(len(head or []), width)]
+            out.append({"kind": "table", "columns": cols, "rows": data[:MAX_RECORDS], "total": len(data)})
+    return out
+
+
+def _fields(it) -> dict[str, str]:
+    rec: dict[str, str] = {}
+    for n in it.css("[class]"):
+        if n.mem_id == it.mem_id:
+            continue
+        cls = (n.attributes.get("class") or "").split()
+        val = _clean(n.text())[:100]
+        if not cls or not val or any(_clean(d.text()) for d in n.css("[class]") if d.mem_id != n.mem_id):
+            continue
+        rec.setdefault(cls[-1] if cls[0].startswith(("col-", "fa", "flag")) else cls[0], val)
+    h = it.css_first("h1, h2, h3, h4, h5, [itemprop=name]")
+    if h is not None:
+        a = h.css_first("a[title]")
+        name = _clean(a.attributes.get("title") if a is not None else h.text())[:120]
+        if name and name not in rec.values():
+            rec = {"name": name, **rec}
+    return rec
+
+
+def _card_records(tree: HTMLParser) -> list[dict]:
+    """Repeated blocks sharing a tag+class across the page (product cards, country cards, quote boxes)."""
+    body = tree.body
+    if body is None:
+        return []
+    groups: dict[tuple, list] = {}
+    for n in body.css("[class]"):
+        if n.tag in ("a", "span", "i", "img", "svg", "path", "option", "td", "tr", "th", "li") and n.tag != "li":
+            continue
+        groups.setdefault((n.tag, n.attributes.get("class")), []).append(n)
+    out = []
+    for (tag, cls), items in groups.items():
+        if len(items) < 5:
+            continue
+        sample = [_fields(it) for it in items[:5]]
+        if sum(len(r) >= 2 for r in sample) < 4:
+            continue
+        rows, fields = [], []
+        for it in items[:MAX_RECORDS]:
+            rec = _fields(it)
+            for k in rec:
+                if k not in fields:
+                    fields.append(k)
+            rows.append(rec)
+        fields = fields[:8]
+        out.append({"kind": "list", "selector": f"{tag}.{cls.split()[-1]}", "columns": fields,
+                    "rows": [[r.get(f, "") for f in fields] for r in rows], "total": len(items), "_n": len(fields)})
+    # prefer the outermost card: drop groups whose columns are a subset of a bigger-or-equal group
+    out.sort(key=lambda r: (-r["total"], -r["_n"]))
+    keep: list[dict] = []
+    for r in out:
+        if any(set(r["columns"]) <= set(k["columns"]) for k in keep):
+            continue
+        keep.append(r)
+    for r in keep:
+        r.pop("_n", None)
+    return keep[:3]
+
+
+def extract_records(tree: HTMLParser) -> list[dict]:
+    recs = _table_records(tree) + _card_records(tree)
+    for r in recs:
+        stats = {}
+        for i, c in enumerate(r["columns"]):
+            nums = [(to_number(row[i]), row) for row in r["rows"] if i < len(row) and NUM_RE.match(row[i].strip() or "x")]
+            nums = [(v, row) for v, row in nums if v is not None]
+            if len(nums) >= max(3, len(r["rows"]) // 2):
+                lo, hi = min(nums, key=lambda x: x[0]), max(nums, key=lambda x: x[0])
+                stats[c] = {"max": hi[0], "max_row": hi[1][0], "min": lo[0], "min_row": lo[1][0], "count": len(nums)}
+                if i == 0 and len(r["columns"]) > 1:
+                    stats[c].update(max_row=hi[1][1] if len(hi[1]) > 1 else "", min_row=lo[1][1] if len(lo[1]) > 1 else "")
+        r["numeric_stats"] = stats
+    return recs[:4]

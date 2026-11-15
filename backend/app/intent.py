@@ -143,4 +143,30 @@ async def interpret(prompt: str, history=None) -> tuple[TaskSpec, str | None]:
         if not task.url or _host(task.url) not in _allowed_hosts(prompt, history):
             fb = rule_based(prompt, _last_url(prompt, history))
             return fb, "intent model proposed a site the user never named; used the user's URL instead"
+        # the model may not guess paths: an unseen page on a named site becomes a focused crawl from the
+        # site's front page (only GitHub repo paths are allowed, they are read through GitHub's API)
+        if not _known_page(task.url, prompt, history):
+            p = urlsplit(task.url if "://" in task.url else "https://" + task.url)
+            root = f"{p.scheme}://{p.netloc}/"
+            task = task.model_copy(update={"url": root, "depth": max(task.depth, 2),
+                                           "max_pages": max(task.max_pages, min(12, settings.max_pages_cap)),
+                                           "focus": task.focus or prompt[:120]})
     return task, None
+
+
+def _norm(u: str) -> str:
+    u = u if "://" in u else "https://" + u
+    p = urlsplit(u)
+    return (p.hostname or "").lower().removeprefix("www.") + (p.path.rstrip("/") or "")
+
+
+def _known_page(url: str, prompt: str, history) -> bool:
+    if re.match(r"^(www\.)?github\.com/[A-Za-z0-9-]+/[A-Za-z0-9._-]+(/|$)", url.split("://")[-1], re.I):
+        return True
+    seen = {_norm(u) for u in find_urls(prompt)}
+    for t in history or []:
+        seen |= {_norm(u) for u in find_urls(t.prompt)}
+        if t.url:
+            seen.add(_norm(t.url))
+    n = _norm(url)
+    return n in seen or "/" not in n

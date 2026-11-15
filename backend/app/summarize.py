@@ -24,6 +24,13 @@ First answer the user's actual question directly and specifically (counts, names
 as they appear). If the content does not contain the answer, say plainly what is missing and set
 "answer_found" to false. Cite the page URLs you used.
 
+Pages may include "Records": structured rows the crawler pulled from repeated items or tables, with
+"Computed" lines giving the exact max/min of numeric columns over ALL rows. Prefer records and computed
+lines over page text for counts, rankings and largest/smallest questions. A page marked "[TEXT CUT]" was
+only partly included: if your answer depends on the missing part and records do not cover it, say the
+answer is based on the part that was read. If a page is one page of a paginated list (page numbers,
+"next", per-page selectors) say the answer covers only the rows that were crawled.
+
 Return ONLY JSON:
 {"answer": "direct answer to the question in 1-6 sentences; may include a short list using '\\n- ' items",
  "answer_found": true,
@@ -36,6 +43,36 @@ Return ONLY JSON:
  "follow_ups": ["2-3 short natural follow-up questions the user could ask about this same site, answerable by crawling it"]}"""
 
 CONTEXT_BUDGET = 18000
+RECORDS_BUDGET = 9000
+
+
+def _fmt_num(v: float) -> str:
+    return str(int(v)) if float(v).is_integer() else str(v)
+
+
+def records_block(p: dict, room: int) -> str:
+    out = []
+    for r in p.get("records", [])[:3]:
+        head = f"Records ({r.get('selector') or r.get('kind')}, {r['total']} items): " + " | ".join(r["columns"])
+        lines = [head]
+        for c, st in (r.get("numeric_stats") or {}).items():
+            lines.append(f"Computed over all {st['count']} rows: largest {c} = {_fmt_num(st['max'])} ({st['max_row']}); "
+                         f"smallest {c} = {_fmt_num(st['min'])} ({st['min_row']})")
+        shown = 0
+        for row in r["rows"]:
+            line = " | ".join(x[:60] for x in row)
+            if sum(len(x) + 1 for x in lines) + len(line) > room:
+                break
+            lines.append(line)
+            shown += 1
+        if shown < r["total"]:
+            lines.append(f"(rows shown: {shown} of {r['total']})")
+        block = "\n".join(lines) + "\n"
+        room -= len(block)
+        out.append(block)
+        if room < 300:
+            break
+    return "".join(out)
 
 
 def build_context(result: dict) -> str:
@@ -53,8 +90,15 @@ def build_context(result: dict) -> str:
             break
         share = 6000 if i < 2 else max(700, room // max(len(ranked) - i, 1))
         hs = "; ".join(h["text"] for h in p.get("headings", [])[:12])
+        recs = records_block(p, min(RECORDS_BUDGET, room - 600)) if i < 3 and room > 1500 else ""
+        text = p.get("text_excerpt", "")
+        cut = p.get("text_truncated")
+        if recs and "(rows shown" not in recs:
+            text, cut = text[:1500], True  # every row is already in the records
         block = (f"\n--- PAGE {p.get('url')}\nTitle: {p.get('title','')}\nMeta: {p.get('description','')}\n"
-                 f"Headings: {hs}\nText: {p.get('text_excerpt','')}")[: min(share, room)]
+                 f"Headings: {hs}\n{recs}Text{' [TEXT CUT]' if cut else ''}: {text}")
+        if len(block) > min(share + len(recs), room):
+            block = block[: min(share + len(recs), room)] + " [TEXT CUT]"
         parts.append(block)
         used += len(block)
     return "".join(parts)
@@ -89,7 +133,14 @@ async def make_insights(result: dict, task: TaskSpec) -> tuple[Insights, str]:
     user = (f"User question: {question}\nFocus keywords: {task.focus or 'none'}\n\n<untrusted_website_content>\n"
             f"{build_context(result)}\n</untrusted_website_content>")
     try:
-        raw = await chat_json(settings.summary_model, SYSTEM, user, max_tokens=1800)
+        try:
+            raw = await chat_json(settings.summary_model, SYSTEM, user, max_tokens=1800)
+        except LLMError as exc:
+            # Groq free tier: the 120b model has a small tokens-per-minute budget. Back-to-back questions
+            # can hit HTTP 429/413; the 20b model has its own budget and answers well from the same context.
+            if "429" not in str(exc) and "413" not in str(exc):
+                raise
+            raw = await chat_json(settings.intent_model, SYSTEM, user, max_tokens=1800)
         raw = {k: raw.get(k) for k in Insights.model_fields if raw.get(k) is not None}
         for k, cap in (("key_points", 6), ("topics", 6), ("follow_ups", 3)):
             if isinstance(raw.get(k), list):
@@ -118,6 +169,10 @@ def build_output(result: dict, insights: Insights | None, summary_source: str, t
         "depth": p.get("depth"),
         "found_on": p.get("found_on"),
         "relevance": p.get("relevance"),
+        "text_truncated": bool(p.get("text_truncated")),
+        "records": [{"source": r.get("selector") or r.get("kind"), "columns": r["columns"], "total": r["total"],
+                     "rows": r["rows"][:100], "numeric_stats": r.get("numeric_stats") or {}}
+                    for r in p.get("records", [])[:3]],
     } for p in result.get("pages", [])]
     site = result.get("site", {})
     doc = {

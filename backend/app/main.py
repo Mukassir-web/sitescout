@@ -119,11 +119,20 @@ async def http_exc(_: Request, exc: HTTPException):
 
 # ---- static frontend (built React app) ----------------------------------------
 if settings.static_dir.exists():
-    app.mount("/assets", StaticFiles(directory=settings.static_dir / "assets"), name="assets")
+    class ImmutableStatic(StaticFiles):
+        async def get_response(self, path, scope):
+            resp = await super().get_response(path, scope)
+            if resp.status_code == 200:
+                resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            return resp
+
+    app.mount("/assets", ImmutableStatic(directory=settings.static_dir / "assets"), name="assets")
 
     @app.get("/{path:path}", include_in_schema=False)
     async def spa(path: str):
         target = (settings.static_dir / path).resolve()
         if path and target.is_file() and settings.static_dir.resolve() in target.parents:
             return FileResponse(target)
-        return FileResponse(settings.static_dir / "index.html")
+        # index.html must never be cached, so a new deploy shows up on the next refresh;
+        # hashed files under /assets are immutable and can be cached forever
+        return FileResponse(settings.static_dir / "index.html", headers={"Cache-Control": "no-cache, must-revalidate"})

@@ -102,6 +102,8 @@ stderr : JSON-lines progress events
 
 It works on its own, which is how judges can verify that the chat is backed by real execution.
 
+What it reads: besides title, headings, links and text, the CLI turns tables and repeated blocks (product cards, country cards, quote boxes) into structured `records` and computes the exact max/min of every numeric column over all rows, so "which country is largest?" is answered from all 250 rows even when the page text is trimmed. Pages record `text_truncated`, and the answer must say when it only saw part of a page. GitHub repository URLs are read through GitHub's official REST API (repo info, README, languages, commit count and latest commits) because github.com rate-limits HTML requests from cloud servers; an optional public-read `SITESCOUT_GITHUB_TOKEN` is passed to the CLI only for `api.github.com`. Every `page_done` event carries a small `preview` (headings, lead text, records found) that the UI shows live as a reader view.
+
 How it chooses pages: when the start URL has a path (a GitHub repo, a docs folder) the crawl stays inside that section; links in the page's main content beat header/footer chrome; and links whose URL or anchor text match `--focus` words are fetched first. The plan is emitted as a `crawl_plan` event, and every page records its `relevance` score and the page it was `found_on`.
 
 ## Security and reliability

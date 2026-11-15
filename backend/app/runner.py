@@ -105,6 +105,10 @@ def _child_env() -> dict:
     keep = {k: os.environ[k] for k in ("PATH", "LANG", "LC_ALL", "SSL_CERT_FILE", "SSL_CERT_DIR", "HOME") if k in os.environ}
     keep["PYTHONUNBUFFERED"] = "1"
     keep["PYTHONPATH"] = str(settings.cli_dir)
+    # optional public-read token, used by the CLI only for api.github.com (see cli/sitecrawl/github.py)
+    gh = os.environ.get("SITESCOUT_GITHUB_TOKEN", "").strip()
+    if gh:
+        keep["SITESCOUT_GITHUB_TOKEN"] = gh
     return keep
 
 

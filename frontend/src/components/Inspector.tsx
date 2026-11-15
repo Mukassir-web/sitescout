@@ -1,6 +1,6 @@
 import { motion } from "motion/react";
 import { Square } from "lucide-react";
-import type { RunView } from "../types";
+import type { CrawlNode, RunView } from "../types";
 import { CrawlMap } from "./CrawlMap";
 import { Console } from "./Console";
 import { LIVE, statusMeta, host } from "./status";
@@ -17,7 +17,9 @@ function stepIndex(run: RunView) {
   return { queued: 0, interpreting: 0, executing: 1, processing: 2 }[run.stage as string] ?? 3;
 }
 
-export function Inspector({ run, onCancel }: { run: RunView | null; onCancel: (id: string) => void }) {
+export function Inspector({ run, onCancel, siteNodes }: {
+  run: RunView | null; onCancel: (id: string) => void; siteNodes?: Record<string, CrawlNode>;
+}) {
   if (!run) {
     return (
       <div className="h-full flex flex-col justify-center px-8 text-graphite">
@@ -83,7 +85,7 @@ export function Inspector({ run, onCancel }: { run: RunView | null; onCancel: (i
             <dt className="text-graphite">Limits</dt><dd>up to {run.task.max_pages} pages, depth {run.task.depth}</dd>
             <dt className="text-graphite">Return</dt><dd>answer, {run.task.outputs.join(" and ")}</dd>
             {run.task.focus && <><dt className="text-graphite">Focus</dt><dd>{run.task.focus}</dd></>}
-            {plan && <><dt className="text-graphite">Crawl plan</dt><dd>stay inside {plan.scope}{plan.terms.length ? `, links about ${plan.terms.join(", ")} first` : ""}</dd></>}
+            {plan && <><dt className="text-graphite">Crawl plan</dt><dd>{planEv?.source ? `${String(planEv.source)}, ` : ""}stay inside {plan.scope}{plan.terms.length ? `, links about ${plan.terms.join(", ")} first` : ""}</dd></>}
             <dt className="text-graphite">Parsed by</dt><dd>{run.task.interpreted_by === "llm" ? "Groq model, schema-checked" : "rule-based fallback"}</dd>
           </dl>
         </section>
@@ -91,7 +93,7 @@ export function Inspector({ run, onCancel }: { run: RunView | null; onCancel: (i
 
       {(Object.keys(run.nodes).length > 0 || (live && run.stage === "executing")) && (
         <section aria-label="Crawl map">
-          <CrawlMap nodes={run.nodes} live={live && run.stage === "executing"} ended={run.ended}
+          <CrawlMap nodes={siteNodes ?? run.nodes} live={live && run.stage === "executing"} ended={run.ended}
             sources={run.result?.summary?.sources ?? run.result?.data?.insights?.sources ?? []} />
         </section>
       )}

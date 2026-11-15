@@ -69,7 +69,9 @@ export function ResultMessage({ run, selected, onSelect, onAsk }: {
           <p className="mt-3 text-[14.5px] text-graphite">
             {run.result?.execution?.exit_code === 5 ? "Use a public http or https address. Private, local and cloud-metadata addresses are blocked on purpose."
               : run.result?.execution?.exit_code === 4 ? "This site asks crawlers not to visit that path. Try its homepage or a different site."
-              : "Check the address and try again, or ask for fewer pages."}
+              : /429|rate-limit/i.test(r.error ?? "") ? "This site is limiting requests from our server right now. Wait a minute and try again, or try another site."
+              : /403/.test(r.error ?? "") ? "This site refused our crawler (HTTP 403). Some sites block automated visitors; try another site."
+              : "Check the address and try again."}
           </p>
         </div>
       ) : null}

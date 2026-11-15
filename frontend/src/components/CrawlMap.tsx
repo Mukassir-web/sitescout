@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence, useReducedMotion } from "motion/react";
 import { RotateCcw, ExternalLink } from "lucide-react";
-import type { CrawlNode } from "../types";
+import type { CrawlNode, PagePreview } from "../types";
 
 const SIZE = 400;
 const C = SIZE / 2;
@@ -35,6 +35,36 @@ const norm = (u: string) => u.replace(/\/$/, "");
  * Centre: the start page. Each ring: one more link away. Each dot: a page the CLI fetched,
  * sized by how much text it had; cobalt halos mark the pages the answer was built from.
  */
+/** What the crawler actually read on a page: the "screen" of an HTTP crawler, shown as it arrives. */
+function Reader({ p }: { p: PagePreview }) {
+  return (
+    <motion.div key={p.lead} initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.25 }}
+      className="mt-2.5 pt-2.5 border-t border-rule space-y-2">
+      {p.source && <div className="text-[12px] text-cobalt">Read through the {p.source}</div>}
+      {p.headings && p.headings.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {p.headings.slice(0, 4).map((h) => (
+            <span key={h} className="max-w-full truncate rounded-md bg-fog px-1.5 py-0.5 text-[12px]">{clip(h, 42)}</span>
+          ))}
+        </div>
+      )}
+      {(p.lead || p.description) && (
+        <p className="font-serif text-[14px] leading-[1.45] text-ink/85 line-clamp-4">{p.description || p.lead}</p>
+      )}
+      {p.records?.map((r) => (
+        <div key={r.what} className="text-[12.5px] text-graphite">
+          Found <span className="text-ink tabular-nums">{r.count}</span> repeated items ({r.what}): {r.columns.slice(0, 4).join(", ")}
+        </div>
+      ))}
+      <div className="flex flex-wrap gap-x-3 text-[12px] text-graphite tabular-nums">
+        {p.chars ? <span>{p.chars.toLocaleString()} chars of text</span> : null}
+        {p.links ? <span>{p.links} links</span> : null}
+        {p.truncated ? <span className="text-ochre">long page, text trimmed{p.records?.length ? ", items kept in full" : ""}</span> : null}
+      </div>
+    </motion.div>
+  );
+}
+
 export function CrawlMap({ nodes, live, sources = [], ended = false }: {
   nodes: Record<string, CrawlNode>; live: boolean; sources?: string[]; ended?: boolean;
 }) {
@@ -88,7 +118,8 @@ export function CrawlMap({ nodes, live, sources = [], ended = false }: {
   }, [replay, layout.list.length]);
 
   const visible = (n: CrawlNode, i: number) => replay === null || i < replay;
-  const focusUrl = hover ?? pinned;
+  const latest = useMemo(() => [...layout.list].reverse().find((n) => n.state === "done" && !n.prior)?.url ?? null, [layout.list]);
+  const focusUrl = hover ?? pinned ?? (live ? latest : null);
   const focused = focusUrl ? nodes[focusUrl] : null;
   const done = layout.list.filter((n) => n.state === "done").length;
   const failed = layout.list.filter((n) => n.state === "failed").length;
@@ -121,11 +152,6 @@ export function CrawlMap({ nodes, live, sources = [], ended = false }: {
           </g>
         ) : null))}
 
-        {live && !reduce && (
-          <motion.circle cx={C} cy={C} fill="none" stroke="var(--color-cobalt)" strokeWidth={1}
-            initial={{ r: 10, opacity: 0.5 }} animate={{ r: 185, opacity: 0 }}
-            transition={{ duration: 2.4, repeat: Infinity, ease: "easeOut" }} />
-        )}
 
         <AnimatePresence>
           {layout.list.map((n, i) => {
@@ -138,7 +164,7 @@ export function CrawlMap({ nodes, live, sources = [], ended = false }: {
             const hot = focusUrl === n.url;
             return (
               <motion.path key={"e" + n.url} d={`M${pp.x},${pp.y} Q${mx},${my} ${p.x},${p.y}`} fill="none"
-                stroke={n.state === "failed" ? "var(--color-brick)" : hot || isUsed ? "var(--color-cobalt)" : n.state === "skipped" ? "#CDD2CA" : "#AEB4AC"}
+                stroke={n.state === "failed" ? "var(--color-brick)" : hot || isUsed ? "var(--color-cobalt)" : n.state === "skipped" || n.prior ? "#CDD2CA" : "#AEB4AC"}
                 strokeOpacity={isUsed && !hot ? 0.55 : 1}
                 strokeWidth={hot ? 1.6 : isUsed ? 1.3 : 1}
                 strokeDasharray={n.state === "failed" || n.state === "skipped" ? "3 3" : undefined}
@@ -155,7 +181,7 @@ export function CrawlMap({ nodes, live, sources = [], ended = false }: {
           const r = radius(n);
           const isUsed = used.has(norm(n.url));
           const hot = focusUrl === n.url;
-          const fill = n.state === "failed" ? "var(--color-brick)" : n.state === "fetching" || n.state === "skipped" ? "var(--color-sheet)" : "var(--color-ink)";
+          const fill = n.state === "failed" ? "var(--color-brick)" : n.state === "fetching" || n.state === "skipped" ? "var(--color-sheet)" : n.prior ? "#B4BAC4" : "var(--color-ink)";
           // labels sit outside the node, on the side facing away from the centre
           const lx = p.x + Math.cos(p.a) * (r + 6);
           const ly = p.y + Math.sin(p.a) * (r + 6) + 3;
@@ -179,14 +205,14 @@ export function CrawlMap({ nodes, live, sources = [], ended = false }: {
                 strokeWidth={1.5}
                 initial={reduce ? false : { r: 0 }} animate={{ r: hot ? r + 1.5 : r }}
                 transition={{ type: "spring", stiffness: 520, damping: 22 }} />
-              {isRoot && n.state === "done" && <circle cx={p.x} cy={p.y} r={3} fill="var(--color-cobalt)" />}
+              {isRoot && n.state === "done" && <circle cx={p.x} cy={p.y} r={3} fill="var(--color-sheet)" />}
               {n.state === "fetching" && !reduce && (
                 <motion.circle cx={p.x} cy={p.y} r={r} fill="var(--color-cobalt)"
                   animate={{ opacity: [0.15, 0.6, 0.15] }} transition={{ duration: 1, repeat: Infinity }} />
               )}
               {(showLabels || hot || isRoot) && label && (
                 <text x={isRoot ? p.x : lx} y={isRoot ? p.y + r + 14 : ly} textAnchor={anchor} fontSize={isRoot ? 11 : 10}
-                  fill={hot || isUsed ? "var(--color-cobalt)" : isRoot ? "var(--color-ink)" : "#6B7280"}
+                  fill={hot || isUsed ? "var(--color-cobalt)" : n.prior ? "#9AA1AC" : isRoot ? "var(--color-ink)" : "#6B7280"}
                   fontWeight={isRoot ? 600 : 400}
                   style={{ fontFamily: "var(--font-sans)", paintOrder: "stroke", stroke: "var(--color-sheet)", strokeWidth: 3, strokeLinejoin: "round" }}>
                   {label}
@@ -199,6 +225,7 @@ export function CrawlMap({ nodes, live, sources = [], ended = false }: {
 
       <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-[12px] text-graphite">
         <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-ink" />page, size = text</span>
+        {layout.list.some((n) => n.prior) && <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-[#B4BAC4]" />earlier question</span>}
         {used.size > 0 && <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full border-[1.5px] border-cobalt" />used in answer</span>}
         {failed > 0 && <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-brick" />failed</span>}
         {skipped > 0 && <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full border border-[#AEB4AC]" />not fetched</span>}
@@ -214,7 +241,7 @@ export function CrawlMap({ nodes, live, sources = [], ended = false }: {
                   className="shrink-0 text-graphite hover:text-cobalt"><ExternalLink size={14} /></a>
               )}
             </div>
-            <div className="mt-1 text-graphite truncate">{pathOf(focused.url)}</div>
+            <div className="mt-1 text-graphite truncate">{live && !hover && !pinned ? "Reading now: " : ""}{pathOf(focused.url)}</div>
             <div className="mt-1.5 flex flex-wrap gap-x-3 text-graphite tabular-nums">
               {focused.status ? <span>HTTP {focused.status}</span> : null}
               {focused.ms ? <span>{focused.ms} ms</span> : null}
@@ -223,7 +250,9 @@ export function CrawlMap({ nodes, live, sources = [], ended = false }: {
               {used.has(norm(focused.url)) ? <span className="text-cobalt">used in answer</span> : null}
               {focused.state === "failed" ? <span className="text-brick">failed</span> : null}
               {focused.state === "skipped" ? <span>not fetched, page limit reached</span> : null}
+              {focused.prior ? <span>from an earlier question</span> : null}
             </div>
+            {focused.preview && <Reader p={focused.preview} />}
           </>
         ) : (
           <div className="text-graphite">
