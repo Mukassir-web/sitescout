@@ -182,7 +182,7 @@ The live demo runs on **Render's free tier** (Singapore), built straight from th
 2. Instance type Free; health check path `/api/health`.
 3. Add the secret env var `GROQ_API_KEY`. Render injects `PORT`, which the container honours.
 
-Free instances sleep after 15 idle minutes, so `.github/workflows/keep-alive.yml` pings `/api/health` every 10 minutes. CI (`ci.yml`) runs the tests, type-check and UI build on every push.
+Free instances sleep after 15 idle minutes, so `.github/workflows/keepalive.yml` pings `/api/health` every 10 minutes. CI (`ci.yml`) runs the tests, type-check and UI build on every push.
 
 Any Docker host works the same way (Render, Cloud Run, a VPS): build the Dockerfile, set `GROQ_API_KEY`, expose port 7860. Health check: `GET /api/health`.
 
