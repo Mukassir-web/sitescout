@@ -90,7 +90,7 @@ def build_context(result: dict) -> str:
             break
         share = 6000 if i < 2 else max(700, room // max(len(ranked) - i, 1))
         hs = "; ".join(h["text"] for h in p.get("headings", [])[:12])
-        recs = records_block(p, min(RECORDS_BUDGET, room - 600)) if i < 3 and room > 1500 else ""
+        recs = records_block(p, min(RECORDS_BUDGET if i < 2 else 2500, room - 600)) if i < 8 and room > 1500 else ""
         text = p.get("text_excerpt", "")
         cut = p.get("text_truncated")
         if recs and "(rows shown" not in recs:

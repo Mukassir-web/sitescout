@@ -155,6 +155,9 @@ def scope_prefix(start_url: str) -> str:
     return path.rstrip("/")
 
 
+PAGINATION_EXTRA = 8  # pages of a paginated list followed beyond --depth
+
+
 def score_link(link: dict, prefix: str, terms: list[str]) -> float:
     path = urlsplit(link["url"]).path.lower()
     hay = (path + " " + (link.get("text") or "")).lower()
@@ -164,6 +167,10 @@ def score_link(link: dict, prefix: str, terms: list[str]) -> float:
     if link.get("in_content"):
         s += 3
     s += sum(4 for t in terms if t in hay)
+    txt = (link.get("text") or "").strip().lower()
+    if txt in ("next", "next »", "next page", "»", "older") or (re.search(r"(^|[/-])page[-/=]?([2-9]|\d\d+)\b", path + "?" + urlsplit(link["url"]).query)
+                                                                    and "prev" not in txt):
+        s += 12  # pagination: lists continue on the next page
     s -= path.count("/") * 0.15 + (0.5 if urlsplit(link["url"]).query else 0)
     return s
 
@@ -258,7 +265,10 @@ async def crawl(start_url: str, lim: Limits, st: CrawlState) -> None:
                             })
                 return internal
 
-        for depth in range(lim.max_depth + 1):
+        pager = lambda u: scores.get(u, 0) >= 12  # noqa: E731  (a "next"/page-N link)
+        for depth in range(lim.max_depth + 1 + PAGINATION_EXTRA):
+            if depth > lim.max_depth:  # past the depth limit only the pagination chain continues
+                frontier = [u for u in frontier if pager(u) and pager(parents.get(u, ''))][:1]
             if not frontier or len(st.pages) >= lim.max_pages:
                 break
             results = await asyncio.gather(*(visit(u, depth) for u in frontier))
@@ -281,4 +291,9 @@ async def crawl(start_url: str, lim: Limits, st: CrawlState) -> None:
                 scores[link] = sc
                 events.emit("debug", "link_queued", url=link, parent=parent, depth=depth + 1)
             remaining = lim.max_pages - len(st.pages)
-            frontier = nxt[: max(remaining, 0) * 2]  # small buffer for failures
+            chain = lambda u: pager(u) and (parents[u] == start_url or pager(parents[u]))  # noqa: E731
+            pag = [u for u in nxt if chain(u)]
+            rest = [u for u in nxt if not chain(u)]
+            if pag:  # keep room for the next pages of a list: visit them first, cap the rest
+                rest = rest[: max(remaining - len(pag) - min(8, remaining // 2), 0)]
+            frontier = (pag + rest)[: max(remaining, 0) * 2]  # small buffer for failures

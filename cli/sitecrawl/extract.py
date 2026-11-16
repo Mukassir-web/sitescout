@@ -156,6 +156,11 @@ def _table_records(tree: HTMLParser) -> list[dict]:
     out = []
     for t in tree.css("table"):
         rows = t.css("tr")
+        kv = [(r.css("th"), r.css("td")) for r in rows]
+        if len(rows) >= 2 and all(len(h) == 1 and len(d) == 1 for h, d in kv):
+            data = [[_clean(h[0].text())[:40], _clean(d[0].text())[:80]] for h, d in kv]
+            out.append({"kind": "facts", "columns": ["field", "value"], "rows": data, "total": len(data)})
+            continue
         if len(rows) < 3:
             continue
         head = [_clean(c.text())[:40] for c in rows[0].css("th")] or None
@@ -178,6 +183,9 @@ def _fields(it) -> dict[str, str]:
         if n.mem_id == it.mem_id:
             continue
         cls = (n.attributes.get("class") or "").split()
+        if cls and cls[0] == "star-rating" and len(cls) > 1:
+            rec.setdefault("rating", f"{cls[1]} of Five")
+            continue
         val = _clean(n.text())[:100]
         if not cls or not val or any(_clean(d.text()) for d in n.css("[class]") if d.mem_id != n.mem_id):
             continue
@@ -232,8 +240,21 @@ def _card_records(tree: HTMLParser) -> list[dict]:
 
 def extract_records(tree: HTMLParser) -> list[dict]:
     recs = _table_records(tree) + _card_records(tree)
+    star = tree.css_first(".product_main .star-rating, main .star-rating")
+    if star is not None:
+        cls = (star.attributes.get("class") or "").split()
+        if len(cls) > 1:
+            facts = next((r for r in recs if r["kind"] == "facts"), None)
+            row = ["Rating", f"{cls[1]} of Five"]
+            if facts:
+                facts["rows"].append(row); facts["total"] += 1
+            else:
+                recs.insert(0, {"kind": "facts", "columns": ["field", "value"], "rows": [row], "total": 1})
     for r in recs:
         stats = {}
+        if r["kind"] == "facts":
+            r["numeric_stats"] = {}
+            continue
         for i, c in enumerate(r["columns"]):
             nums = [(to_number(row[i]), row) for row in r["rows"] if i < len(row) and NUM_RE.match(row[i].strip() or "x")]
             nums = [(v, row) for v, row in nums if v is not None]
