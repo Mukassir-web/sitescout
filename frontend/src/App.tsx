@@ -7,6 +7,7 @@ import { Composer } from "./components/Composer";
 import { Inspector } from "./components/Inspector";
 import { ResultMessage } from "./components/ResultMessage";
 import { LIVE, host } from "./components/status";
+import { linkTo } from "./site/router";
 
 const EXAMPLES = [
   "Crawl https://books.toscrape.com, extract the important information, give me a summary, and return the extracted data in JSON format.",
@@ -107,15 +108,15 @@ export default function App() {
   const patchRun = useCallback((id: string, fn: (r: RunView) => RunView) =>
     setChats((cs) => cs.map((c) => (c.runs.some((r) => r.id === id) ? { ...c, runs: c.runs.map((r) => (r.id === id ? fn(r) : r)) } : c))), []);
 
-  const submit = useCallback(async (text?: string) => {
+  const submit = useCallback(async (text?: string, fresh = false) => {
     const prompt = (text ?? draft).trim();
     if (!prompt) return;
     setError(null);
     setDraft("");
     try {
-      const id = await startRun(prompt, historyOf(runsRef.current));
+      const id = await startRun(prompt, fresh ? [] : historyOf(runsRef.current));
       const run: RunView = { id, prompt, createdAt: Date.now(), stage: "queued", stageLabel: "Queued", logs: [], nodes: {}, ended: false };
-      let chatId = activeId && chats.some((c) => c.id === activeId) ? activeId : null;
+      let chatId = !fresh && activeId && chats.some((c) => c.id === activeId) ? activeId : null;
       if (!chatId) {
         chatId = uid();
         const fresh: Chat = { id: chatId, title: titleOf(prompt), createdAt: Date.now(), runs: [run] };
@@ -133,6 +134,15 @@ export default function App() {
       setError(e instanceof Error ? e.message : "Couldn't start the run.");
     }
   }, [draft, activeId, chats, patchRun]);
+
+  const fromLanding = useRef(false);
+  useEffect(() => {
+    if (fromLanding.current) return;
+    fromLanding.current = true;
+    const q = new URLSearchParams(location.search).get("q");
+    if (q) { history.replaceState(null, "", "/app"); submit(q, true); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const newChat = () => { setActiveId(null); setSelected(null); setDraft(""); setDrawer(false); };
   const openChat = (id: string) => { setActiveId(id); setDrawer(false); };
@@ -277,10 +287,10 @@ function ChatList({ chats, activeId, busy, onNew, onOpen, onRemove, onRename }: 
   const sorted = [...chats].sort((a, b) => (b.runs.at(-1)?.createdAt ?? b.createdAt) - (a.runs.at(-1)?.createdAt ?? a.createdAt));
   return (
     <>
-      <div className="flex items-center gap-2.5 px-5 h-16 shrink-0">
+      <a href="/" onClick={linkTo("/")} className="flex items-center gap-2.5 px-5 h-16 shrink-0" title="SiteScout home">
         <Logo />
         <span className="text-[15px] font-semibold tracking-[-0.01em]">SiteScout</span>
-      </div>
+      </a>
       <div className="px-3">
         <button onClick={onNew} disabled={busy}
           className="w-full inline-flex items-center gap-2 h-9 px-3 rounded-lg border border-rule bg-sheet text-[13.5px] hover:border-ink/40 transition-colors disabled:opacity-50">
